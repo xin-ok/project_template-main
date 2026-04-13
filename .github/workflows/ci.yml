@@ -1,0 +1,372 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# 同一分支的新提交会取消旧的运行，节省 CI 时间
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # 统一控制并行编译任务数
+  BUILD_PARALLEL: 4
+
+jobs:
+  # ============================================================
+  #  Windows / MSVC
+  # ============================================================
+  windows-msvc:
+    name: Windows MSVC (${{ matrix.config }})
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [Debug, Release]
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 环境信息
+        shell: pwsh
+        run: |
+          cmake --version
+          Write-Host "--- 可用生成器 ---"
+          cmake --help | Select-String "Visual Studio"
+
+      # ---------- 1. 生成 Presets ----------
+      - name: 生成 CMakePresets.json
+        shell: cmd
+        run: scripts\generate_presets.bat
+
+      - name: 查看可用 Preset
+        shell: pwsh
+        run: cmake --list-presets
+
+      # ---------- 2. 配置 ----------
+      # 从生成的 presets 中动态挑选 msvc 的 preset，避免硬编码 VS 版本
+      - name: 选择 Preset
+        shell: pwsh
+        run: |
+          $presets = (cmake --list-presets=configure | Out-String)
+          Write-Host $presets
+          $name = ($presets -split "`n" |
+                   Select-String '^\s+"(msvc\d+-${{ matrix.config }})"' |
+                   ForEach-Object { $_.Matches[0].Groups[1].Value } |
+                   Select-Object -First 1)
+          if (-not $name) { throw "未找到 msvc*-${{ matrix.config }} preset" }
+          Write-Host "使用 preset: $name"
+          "PRESET=$name" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: 配置 (CMake)
+        shell: pwsh
+        run: |
+          cmake --preset $env:PRESET `
+                -DBUILD_TESTS=ON `
+                -DBUILD_BENCHMARKS=ON
+
+      # ---------- 3. 构建 ----------
+      - name: 构建
+        shell: pwsh
+        run: cmake --build --preset $env:PRESET --parallel $env:BUILD_PARALLEL
+
+      # ---------- 4. 单元测试 ----------
+      - name: 单元测试
+        shell: pwsh
+        run: |
+          ctest --preset "ctest-$env:PRESET" `
+                --output-on-failure `
+                --parallel $env:BUILD_PARALLEL
+
+      # ---------- 5. 性能测试 ----------
+      - name: 性能测试
+        shell: pwsh
+        run: |
+          $bench = Get-ChildItem -Path bin -Recurse -Filter "bench_math*.exe" |
+                   Select-Object -First 1
+          if (-not $bench) { throw "未找到 bench_math 可执行文件" }
+          Write-Host "运行: $($bench.FullName)"
+          & $bench.FullName --benchmark_min_time=0.1s --benchmark_format=console
+          if ($LASTEXITCODE -ne 0) { throw "性能测试失败" }
+
+      # ---------- 6. 安装 ----------
+      - name: 安装
+        shell: pwsh
+        run: |
+          cmake --install "build/$env:PRESET" --config ${{ matrix.config }}
+          Write-Host "--- 安装产物 ---"
+          Get-ChildItem -Path "install/$env:PRESET" -Recurse -File |
+            Select-Object -ExpandProperty FullName
+
+      # ---------- 7. 验证 find_package 可用 ----------
+      - name: 验证导出包 (find_package)
+        shell: pwsh
+        run: |
+          $consumer = Join-Path $env:RUNNER_TEMP "consumer"
+          New-Item -ItemType Directory -Path $consumer -Force | Out-Null
+
+          @'
+          cmake_minimum_required(VERSION 3.14)
+          project(consumer LANGUAGES CXX)
+          find_package(project_template REQUIRED)
+          add_executable(consumer main.cc)
+          target_link_libraries(consumer PRIVATE project_template::project_template)
+          '@ | Set-Content -Path "$consumer/CMakeLists.txt" -Encoding utf8
+
+          @'
+          #include "static_lib/static_lib.h"
+          #include "shared_lib/shared_lib.h"
+          int main() { static_lib(); shared_lib(); return 0; }
+          '@ | Set-Content -Path "$consumer/main.cc" -Encoding utf8
+
+          $prefix = (Resolve-Path "install/$env:PRESET").Path
+          cmake -S $consumer -B "$consumer/build" -DCMAKE_PREFIX_PATH="$prefix"
+          if ($LASTEXITCODE -ne 0) { throw "find_package 失败" }
+          cmake --build "$consumer/build" --config ${{ matrix.config }} --parallel $env:BUILD_PARALLEL
+          if ($LASTEXITCODE -ne 0) { throw "消费者工程构建失败" }
+
+      # ---------- 8. 打包 ----------
+      - name: 打包 (CPack)
+        shell: pwsh
+        run: cpack --preset "cpack-$env:PRESET"
+
+      - name: 上传安装包
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ matrix.config }}-packages
+          path: packages/*.zip
+          if-no-files-found: error
+
+      # ---------- 9. 清理 ----------
+      - name: 清理
+        if: always()
+        shell: cmd
+        run: scripts\clean_all.bat
+
+  # ============================================================
+  #  Linux / GCC
+  # ============================================================
+  linux-gcc:
+    name: Linux GCC (${{ matrix.config }})
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [Debug, Release]
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 安装依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build build-essential
+
+      - name: 环境信息
+        run: |
+          cmake --version
+          gcc --version
+          g++ --version
+          ninja --version
+
+      # ---------- 1. 生成 Presets ----------
+      - name: 生成 CMakePresets.json
+        run: bash scripts/generate_presets.sh
+
+      - name: 查看可用 Preset
+        run: cmake --list-presets
+
+      # ---------- 2. 配置 ----------
+      - name: 选择 Preset
+        run: |
+          PRESETS=$(cmake --list-presets=configure)
+          echo "$PRESETS"
+          # preset 名中的配置是小写（debug / release），matrix.config 是首字母大写
+          CONFIG_LOWER=$(echo "${{ matrix.config }}" | tr '[:upper:]' '[:lower:]')
+          NAME=$(echo "$PRESETS" \
+            | grep -oE "\"gcc_[0-9.]+-${CONFIG_LOWER}\"" \
+            | tr -d '"' | head -n1)
+          if [ -z "$NAME" ]; then
+            echo "::error::未找到 gcc_*-${CONFIG_LOWER} preset"
+            exit 1
+          fi
+          echo "使用 preset: $NAME"
+          echo "PRESET=$NAME" >> "$GITHUB_ENV"
+
+      - name: 配置 (CMake)
+        run: |
+          cmake --preset "$PRESET" \
+                -DBUILD_TESTS=ON \
+                -DBUILD_BENCHMARKS=ON
+
+      # ---------- 3. 构建 ----------
+      - name: 构建
+        run: cmake --build --preset "$PRESET" --parallel "$BUILD_PARALLEL"
+
+      # ---------- 4. 单元测试 ----------
+      - name: 单元测试
+        run: |
+          ctest --preset "ctest-$PRESET" \
+                --output-on-failure \
+                --parallel "$BUILD_PARALLEL"
+
+      # ---------- 5. 性能测试 ----------
+      - name: 性能测试
+        run: |
+          echo "--- bin 目录内容 ---"
+          find bin -type f -executable 2>/dev/null | sort || true
+          BENCH=$(find bin -type f -name 'bench_math*' -executable 2>/dev/null | head -n1)
+          if [ -z "$BENCH" ]; then
+            echo "::error::未找到 bench_math 可执行文件"
+            exit 1
+          fi
+          echo "运行: $BENCH"
+          "$BENCH" --benchmark_min_time=0.1s --benchmark_format=console
+
+      # ---------- 6. 安装 ----------
+      - name: 安装
+        run: |
+          cmake --install "build/$PRESET"
+          echo "--- 安装产物 ---"
+          find "install/$PRESET" -type f | sort
+
+      # ---------- 7. 验证 find_package 可用 ----------
+      - name: 验证导出包 (find_package)
+        run: |
+          CONSUMER="$RUNNER_TEMP/consumer"
+          mkdir -p "$CONSUMER"
+
+          cat > "$CONSUMER/CMakeLists.txt" <<'EOF'
+          cmake_minimum_required(VERSION 3.14)
+          project(consumer LANGUAGES CXX)
+          find_package(project_template REQUIRED)
+          add_executable(consumer main.cc)
+          target_link_libraries(consumer PRIVATE project_template::project_template)
+          EOF
+
+          cat > "$CONSUMER/main.cc" <<'EOF'
+          #include "static_lib/static_lib.h"
+          #include "shared_lib/shared_lib.h"
+          int main() { static_lib(); shared_lib(); return 0; }
+          EOF
+
+          PREFIX="$(realpath "install/$PRESET")"
+          cmake -S "$CONSUMER" -B "$CONSUMER/build" -DCMAKE_PREFIX_PATH="$PREFIX"
+          cmake --build "$CONSUMER/build" --parallel "$BUILD_PARALLEL"
+
+      # ---------- 8. 打包 ----------
+      - name: 打包 (CPack)
+        run: cpack --preset "cpack-$PRESET"
+
+      - name: 上传安装包
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.config }}-packages
+          path: packages/*.tar.gz
+          if-no-files-found: error
+
+      # ---------- 9. 清理 ----------
+      - name: 清理
+        if: always()
+        run: bash scripts/clean_all.sh
+
+  # ============================================================
+  #  代码格式检查（失败不阻塞主流程）
+  # ============================================================
+  format-check:
+    name: 代码格式检查
+    runs-on: ubuntu-22.04
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 安装 clang-format
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-format
+          echo "--- clang-format 版本 ---"
+          clang-format --version
+
+      - name: 收集源文件
+        id: collect
+        run: |
+          echo "--- 扫描目录: src tests benchmarks examples ---"
+          FILES=$(find src tests benchmarks examples -type f \
+                  \( -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' \
+                     -o -name '*.h'  -o -name '*.hpp' -o -name '*.hxx' \) \
+                  2>/dev/null | sort)
+
+          if [ -z "$FILES" ]; then
+            echo "::warning::未找到任何源文件，跳过格式检查"
+            echo "count=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          COUNT=$(echo "$FILES" | wc -l)
+          echo "--- 共找到 $COUNT 个源文件 ---"
+          echo "$FILES" | while read -r f; do echo "  $f"; done
+
+          # 多行列表写入 GITHUB_OUTPUT 需要特殊格式
+          {
+            echo "count=$COUNT"
+            echo "files<<EOF"
+            echo "$FILES"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: 检查格式
+        if: steps.collect.outputs.count != '0'
+        run: |
+          echo "=========================================="
+          echo "  clang-format 格式检查"
+          echo "=========================================="
+          echo "配置文件: .clang-format"
+          echo "检查文件数: ${{ steps.collect.outputs.count }}"
+          echo ""
+
+          FAILED=0
+          PASSED=0
+          FAILED_LIST=""
+
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            if clang-format --dry-run --Werror "$f" 2>/tmp/cf_err.txt; then
+              PASSED=$((PASSED + 1))
+              echo "  [OK]   $f"
+            else
+              FAILED=$((FAILED + 1))
+              FAILED_LIST="$FAILED_LIST$f\n"
+              echo "  [FAIL] $f"
+              # 输出具体差异（最多 20 行）
+              clang-format "$f" | diff -u "$f" - | head -n 20 | sed 's/^/         /'
+            fi
+          done <<< "${{ steps.collect.outputs.files }}"
+
+          echo ""
+          echo "=========================================="
+          echo "  结果汇总"
+          echo "=========================================="
+          echo "  通过: $PASSED"
+          echo "  失败: $FAILED"
+          echo ""
+
+          if [ "$FAILED" -gt 0 ]; then
+            echo "::error::$FAILED 个文件格式不符合 .clang-format 规范"
+            echo ""
+            echo "以下文件需要格式化："
+            printf "$FAILED_LIST" | while IFS= read -r f; do
+              [ -n "$f" ] && echo "  - $f"
+            done
+            echo ""
+            echo "本地修复方法："
+            echo "  clang-format -i <文件>"
+            echo "  或批量：find src tests benchmarks examples -name '*.cc' -o -name '*.h' | xargs clang-format -i"
+            exit 1
+          fi
+
+          echo "✅ 所有 $PASSED 个文件格式检查通过"

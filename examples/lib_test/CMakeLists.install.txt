@@ -1,0 +1,22 @@
+cmake_minimum_required(VERSION 3.10)
+
+project(lib_test VERSION 1.0.0)
+
+set(CMAKE_PREFIX_PATH 
+ "../.."
+)
+
+find_package(project_template REQUIRED)
+
+set(app_name lib_test)
+
+add_executable(${app_name} ${app_name}.cc)
+
+target_link_libraries(${app_name}
+PRIVATE
+    project_template::project_template
+)
+
+if(MSVC)
+    target_compile_options(${app_name} PRIVATE /utf-8)
+endif()

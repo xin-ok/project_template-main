@@ -1,0 +1,115 @@
+# 基于 Google C++ 风格指南
+BasedOnStyle: Google
+
+# 缩进宽度设置为 2 个空格
+IndentWidth: 2
+
+# 访问修饰符（public:, private:）的额外缩进，-1 表示不额外缩进
+AccessModifierOffset: -1
+
+# 函数定义后的换行行为，None 表示不强制换行
+AlwaysBreakAfterDefinitionReturnType: None
+
+# 返回类型后的换行行为，None 表示不强制换行
+AlwaysBreakAfterReturnType: None
+
+# 模板声明后是否总是换行，true 表示总是换行
+AlwaysBreakTemplateDeclarations: true
+
+# 函数调用参数是否尽量打包在一行，false 表示不打包，每个参数单独一行
+BinPackArguments: false
+
+# 函数参数是否尽量打包在一行，false 表示不打包，每个参数单独一行
+BinPackParameters: false
+
+# 大括号的换行风格，Attach 表示大括号附加在前一行的末尾
+BreakBeforeBraces: Attach
+
+# 每行最大字符数限制，超过则会尝试换行
+ColumnLimit: 80
+
+# 构造函数初始化列表是否全部放在一行或每个初始化器单独一行，false 表示每个单独一行
+ConstructorInitializerAllOnOneLineOrOnePerLine: false
+
+# 构造函数初始化列表的缩进宽度（相对于构造函数声明）
+ConstructorInitializerIndentWidth: 4
+
+# 延续行（换行后的行）的缩进宽度
+ContinuationIndentWidth: 4
+
+# C++11 大括号初始化列表的样式，true 表示在括号内加空格（如 { 1, 2, 3 }）
+Cpp11BracedListStyle: true
+
+# 是否自动修复命名空间结束后的注释，true 表示添加 // namespace namespace_name
+FixNamespaceComments: true
+
+# case 标签下的内容是否缩进，true 表示缩进
+IndentCaseLabels: true
+
+# 预处理器指令的缩进方式，None 表示不缩进（#define 顶格写）
+IndentPPDirectives: None
+
+# 函数参数换行时，函数名是否缩进，false 表示不缩进
+IndentWrappedFunctionNames: false
+
+# 最多保留的连续空行数，超过会被删除
+MaxEmptyLinesToKeep: 1
+
+# 命名空间内部的缩进方式，None 表示不缩进
+NamespaceIndentation: None
+
+# 指针和引用的对齐方式，Left 表示左对齐（int* var，星号靠左）
+PointerAlignment: Left
+
+# 是否重新排版注释（将多行注释重新格式化为指定宽度），true 表示重新排版
+ReflowComments: true
+
+# 是否排序 #include 语句，true 表示按字母顺序排序
+SortIncludes: true
+IncludeCategories:
+  # 优先级 0 最高 — pch.h 始终在最顶部
+  - Regex: '^"(pch|stdafx)\.h"$'
+    Priority: 0
+    SortPriority: 0
+
+# 是否排序 using 声明语句，true 表示按字母顺序排序
+SortUsingDeclarations: true
+
+# C 风格类型转换后是否加空格，false 表示不加（如 (int)value）
+SpaceAfterCStyleCast: false
+
+# template 关键字后是否加空格，false 表示不加（如 template<typename T>）
+SpaceAfterTemplateKeyword: false
+
+# 赋值操作符前后是否加空格，true 表示加（如 a = b）
+SpaceBeforeAssignmentOperators: true
+
+# 圆括号前的空格规则，ControlStatements 表示在 if/for/while 等控制语句后加空格
+SpaceBeforeParens: ControlStatements
+
+# 空圆括号内是否加空格，false 表示不加（如 func()）
+SpaceInEmptyParentheses: false
+
+# 行尾注释前的空格数
+SpacesBeforeTrailingComments: 2
+
+# 尖括号内是否加空格，false 表示不加（如 vector<int>）
+SpacesInAngles: false
+
+# 容器字面量的括号内是否加空格，true 表示加（如 { 1, 2, 3 }）
+SpacesInContainerLiterals: true
+
+# 圆括号内是否加空格，false 表示不加（如 func(a, b)）
+SpacesInParentheses: false
+
+# 方括号内是否加空格，false 表示不加（如 arr[i]）
+SpacesInSquareBrackets: false
+
+# 制表符的显示宽度（一个制表符显示为几个空格）
+TabWidth: 2
+
+# 是否使用制表符，Never 表示永远使用空格，不使用制表符
+UseTab: Never
+
+# 代码语言标准，Auto 表示自动检测（根据文件扩展名和内容）
+Standard: Auto
