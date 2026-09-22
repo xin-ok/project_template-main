@@ -11,7 +11,7 @@ jobs:
   windows_msvc17:
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: 生成 CMakePresets.json
         run: ./generate_presets.bat
@@ -38,7 +38,7 @@ jobs:
         run: cmake --install build/msvc17-release --config Release
 
       - name: 上传压缩包
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: windows-packages
           path: packages/*.zip
@@ -50,7 +50,7 @@ jobs:
   ubuntu_gcc_11_4_0:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: 安装 Ninja
         run: sudo apt update && sudo apt install -y ninja-build
@@ -85,7 +85,7 @@ jobs:
         run: cmake --install build/gcc_11.4.0-release
 
       - name: 上传压缩包
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ubuntu-packages
           path: packages/*.tar.gz
