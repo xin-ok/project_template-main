@@ -116,7 +116,7 @@ if(ENABLE_FSANITIZE_UNDEFINED)
     else()
         add_compile_options(
             -fsanitize=undefined
-            -fsanitize=float-divide-by-zero     # 检测浮点数除零
+            -fsanitize=float-divide-by-zero     
         )
         add_link_options(-fsanitize=undefined)
         # 可选：将未定义行为转换为运行时陷阱（立即崩溃）

@@ -12,9 +12,13 @@ PRIVATE
 set_target_properties(static_lib PROPERTIES FOLDER "project_template")
 
 install(TARGETS static_lib
-    RUNTIME DESTINATION bin     
-    LIBRARY DESTINATION lib     
-    ARCHIVE DESTINATION lib
+    EXPORT ${export_name}Targets 
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
 
-# windows 下 Debug 模式静态库不需要安装 PDB 文件，只有可执行文件和动态库才需要
+install(FILES static_lib.h
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/static_lib
+)
