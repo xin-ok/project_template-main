@@ -75,7 +75,7 @@ jobs:
           }
 
           Write-Host "=== 检查导出配置文件已重命名 ==="
-          $cfg = "cmake/$env:PROJECT_NAMEConfig.cmake.in"
+          $cfg = "cmake/${env:PROJECT_NAME}Config.cmake.in"
           if (-not (Test-Path $cfg)) { throw "未找到 $cfg" }
           Write-Host "  OK: $cfg"
 
@@ -180,7 +180,6 @@ jobs:
             if (-not (Test-Path "$cmakeDir/$f")) { throw "缺少导出文件: $f" }
             Write-Host "  OK: $f"
           }
-
       # ---------- 9. 验证 find_package（用安装产物自带的示例）----------
       - name: 验证 find_package (使用安装的示例工程)
         shell: pwsh
