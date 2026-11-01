@@ -76,6 +76,7 @@ TEXT_REPLACEMENTS: dict[str, list[tuple[str, str]]] = {
     ],
     "README.md": [
         (f"# {TEMPLATE_NAME}", f"# {NAME_TOKEN}"),
+        ("# C++ CMake 工程模板", f"# {NAME_TOKEN}"),
     ],
     "scripts/package_install.py": [
         (f'f"{TEMPLATE_NAME}-install-{{stamp}}"', f'f"{NAME_TOKEN}-install-{{stamp}}"'),

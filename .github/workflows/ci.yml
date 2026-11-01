@@ -1,5 +1,18 @@
 name: CI
 
+# ============================================================================
+#  这个 CI 验证的是「用户套用模板后的完整流程」，而不是模板本身。
+#
+#  流程与 README「30 秒上手」完全一致：
+#    1. 克隆模板
+#    2. python scripts/init_project.py MyProject   ← 关键：实例化模板
+#    3. 生成 CMakePresets.json
+#    4. 配置 → 构建 → 单元测试 → 性能测试
+#    5. 安装 → 验证 find_package → 打包
+#
+#  这样能保证：任何人按 README 操作，都能得到可用的工程。
+# ============================================================================
+
 on:
   push:
     branches: [main]
@@ -7,14 +20,14 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# 同一分支的新提交会取消旧的运行，节省 CI 时间
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
-  # 统一控制并行编译任务数
   BUILD_PARALLEL: 4
+  # 实例化后的工程名（模拟用户输入）
+  PROJECT_NAME: MyProject
 
 jobs:
   # ============================================================
@@ -35,10 +48,51 @@ jobs:
         shell: pwsh
         run: |
           cmake --version
+          python --version
           Write-Host "--- 可用生成器 ---"
           cmake --help | Select-String "Visual Studio"
 
-      # ---------- 1. 生成 Presets ----------
+      # ---------- 1. 实例化模板（README 第 2 步）----------
+      - name: 初始化工程 (init_project.py)
+        shell: pwsh
+        run: |
+          Write-Host "=== 执行 init_project.py $env:PROJECT_NAME ==="
+          python scripts/init_project.py $env:PROJECT_NAME
+          if ($LASTEXITCODE -ne 0) { throw "init_project.py 执行失败" }
+
+      - name: 验证初始化结果
+        shell: pwsh
+        run: |
+          Write-Host "=== 检查 CMakeLists.txt ==="
+          Get-Content CMakeLists.txt | Select-String "project\(|export_name"
+
+          $content = Get-Content CMakeLists.txt -Raw
+          if ($content -notmatch "project\($env:PROJECT_NAME VERSION") {
+            throw "project() 未被替换为 $env:PROJECT_NAME"
+          }
+          if ($content -notmatch "set\(export_name $env:PROJECT_NAME\)") {
+            throw "export_name 未被替换为 $env:PROJECT_NAME"
+          }
+
+          Write-Host "=== 检查导出配置文件已重命名 ==="
+          $cfg = "cmake/$env:PROJECT_NAMEConfig.cmake.in"
+          if (-not (Test-Path $cfg)) { throw "未找到 $cfg" }
+          Write-Host "  OK: $cfg"
+
+          Write-Host "=== 检查旧文件已不存在 ==="
+          if (Test-Path "cmake/project_templateConfig.cmake.in") {
+            throw "旧的 project_templateConfig.cmake.in 仍然存在"
+          }
+          Write-Host "  OK: 旧配置文件已重命名"
+
+          Write-Host "=== 检查 examples 中的工程名已替换 ==="
+          $ex = Get-Content "examples/lib_test/CMakeLists.txt" -Raw
+          if ($ex -notmatch "    $env:PROJECT_NAME") {
+            throw "examples/lib_test/CMakeLists.txt 未替换工程名"
+          }
+          Write-Host "  OK: examples 已替换"
+
+      # ---------- 2. 生成 Presets（README 第 3 步前置）----------
       - name: 生成 CMakePresets.json
         shell: cmd
         run: scripts\generate_presets.bat
@@ -47,42 +101,56 @@ jobs:
         shell: pwsh
         run: cmake --list-presets
 
-      # ---------- 2. 配置 ----------
-      # 从生成的 presets 中动态挑选 msvc 的 preset，避免硬编码 VS 版本
+      # ---------- 3. 选择 Preset ----------
       - name: 选择 Preset
         shell: pwsh
         run: |
           $presets = (cmake --list-presets=configure | Out-String)
           Write-Host $presets
-          $name = ($presets -split "`n" |
-                   Select-String '^\s+"(msvc\d+-${{ matrix.config }})"' |
-                   ForEach-Object { $_.Matches[0].Groups[1].Value } |
-                   Select-Object -First 1)
-          if (-not $name) { throw "未找到 msvc*-${{ matrix.config }} preset" }
-          Write-Host "使用 preset: $name"
+
+          $cfgLower = "${{ matrix.config }}".ToLower()
+          $pattern = '^\s+"(msvc\d+-' + $cfgLower + ')"'
+
+          $candidates = $presets -split "`n" |
+                        Select-String $pattern |
+                        ForEach-Object { $_.Matches[0].Groups[1].Value }
+
+          Write-Host "=== 候选 preset ==="
+          if ($candidates) { $candidates | ForEach-Object { Write-Host "  $_" } }
+          else { Write-Host "  (无)" }
+
+          if (-not $candidates) { throw "未找到 msvc*-$cfgLower preset" }
+
+          $name = $candidates | Select-Object -First 1
+          Write-Host "=== 选中: $name ==="
           "PRESET=$name" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
+      # ---------- 4. 配置 ----------
       - name: 配置 (CMake)
         shell: pwsh
         run: |
           cmake --preset $env:PRESET `
                 -DBUILD_TESTS=ON `
                 -DBUILD_BENCHMARKS=ON
+          if ($LASTEXITCODE -ne 0) { throw "配置失败" }
 
-      # ---------- 3. 构建 ----------
+      # ---------- 5. 构建 ----------
       - name: 构建
         shell: pwsh
-        run: cmake --build --preset $env:PRESET --parallel $env:BUILD_PARALLEL
+        run: |
+          cmake --build --preset $env:PRESET --parallel $env:BUILD_PARALLEL
+          if ($LASTEXITCODE -ne 0) { throw "构建失败" }
 
-      # ---------- 4. 单元测试 ----------
+      # ---------- 6. 单元测试 ----------
       - name: 单元测试
         shell: pwsh
         run: |
           ctest --preset "ctest-$env:PRESET" `
                 --output-on-failure `
                 --parallel $env:BUILD_PARALLEL
+          if ($LASTEXITCODE -ne 0) { throw "单元测试失败" }
 
-      # ---------- 5. 性能测试 ----------
+      # ---------- 7. 性能测试 ----------
       - name: 性能测试
         shell: pwsh
         run: |
@@ -93,46 +161,65 @@ jobs:
           & $bench.FullName --benchmark_min_time=0.1s --benchmark_format=console
           if ($LASTEXITCODE -ne 0) { throw "性能测试失败" }
 
-      # ---------- 6. 安装 ----------
+      # ---------- 8. 安装 ----------
       - name: 安装
         shell: pwsh
         run: |
           cmake --install "build/$env:PRESET" --config ${{ matrix.config }}
-          Write-Host "--- 安装产物 ---"
+          if ($LASTEXITCODE -ne 0) { throw "安装失败" }
+
+          Write-Host "=== 安装产物 ==="
           Get-ChildItem -Path "install/$env:PRESET" -Recurse -File |
             Select-Object -ExpandProperty FullName
 
-      # ---------- 7. 验证 find_package 可用 ----------
-      - name: 验证导出包 (find_package)
+          Write-Host "=== 检查导出包文件 ==="
+          $cmakeDir = "install/$env:PRESET/lib/cmake/$env:PROJECT_NAME"
+          foreach ($f in @("${env:PROJECT_NAME}Config.cmake",
+                           "${env:PROJECT_NAME}ConfigVersion.cmake",
+                           "${env:PROJECT_NAME}Targets.cmake")) {
+            if (-not (Test-Path "$cmakeDir/$f")) { throw "缺少导出文件: $f" }
+            Write-Host "  OK: $f"
+          }
+
+      # ---------- 9. 验证 find_package（用安装产物自带的示例）----------
+      - name: 验证 find_package (使用安装的示例工程)
         shell: pwsh
         run: |
-          $consumer = Join-Path $env:RUNNER_TEMP "consumer"
-          New-Item -ItemType Directory -Path $consumer -Force | Out-Null
+          # 安装时会把 examples/lib_test 的独立构建版本装到 example/lib_test/
+          $exampleDir = "install/$env:PRESET/example/lib_test"
+          if (-not (Test-Path $exampleDir)) {
+            throw "未找到安装的示例工程: $exampleDir"
+          }
 
-          @'
-          cmake_minimum_required(VERSION 3.14)
-          project(consumer LANGUAGES CXX)
-          find_package(project_template REQUIRED)
-          add_executable(consumer main.cc)
-          target_link_libraries(consumer PRIVATE project_template::project_template)
-          '@ | Set-Content -Path "$consumer/CMakeLists.txt" -Encoding utf8
+          Write-Host "=== 示例工程内容 ==="
+          Get-ChildItem $exampleDir | Select-Object -ExpandProperty Name
 
-          @'
-          #include "static_lib/static_lib.h"
-          #include "shared_lib/shared_lib.h"
-          int main() { static_lib(); shared_lib(); return 0; }
-          '@ | Set-Content -Path "$consumer/main.cc" -Encoding utf8
+          Write-Host "=== 检查示例已使用新工程名 ==="
+          $cm = Get-Content "$exampleDir/CMakeLists.txt" -Raw
+          if ($cm -notmatch "find_package\($env:PROJECT_NAME REQUIRED\)") {
+            throw "示例工程未使用 find_package($env:PROJECT_NAME)"
+          }
+          if ($cm -notmatch "$env:PROJECT_NAME::$env:PROJECT_NAME") {
+            throw "示例工程未使用 $env:PROJECT_NAME::$env:PROJECT_NAME"
+          }
+          Write-Host "  OK: 示例工程已正确替换"
 
+          # 用安装前缀构建示例
           $prefix = (Resolve-Path "install/$env:PRESET").Path
-          cmake -S $consumer -B "$consumer/build" -DCMAKE_PREFIX_PATH="$prefix"
-          if ($LASTEXITCODE -ne 0) { throw "find_package 失败" }
-          cmake --build "$consumer/build" --config ${{ matrix.config }} --parallel $env:BUILD_PARALLEL
-          if ($LASTEXITCODE -ne 0) { throw "消费者工程构建失败" }
+          cmake -S $exampleDir -B "$exampleDir/build" -DCMAKE_PREFIX_PATH="$prefix"
+          if ($LASTEXITCODE -ne 0) { throw "示例工程配置失败（find_package 不可用）" }
 
-      # ---------- 8. 打包 ----------
+          cmake --build "$exampleDir/build" --config ${{ matrix.config }} --parallel $env:BUILD_PARALLEL
+          if ($LASTEXITCODE -ne 0) { throw "示例工程构建失败" }
+
+          Write-Host "✅ find_package($env:PROJECT_NAME) 验证通过"
+
+      # ---------- 10. 打包 ----------
       - name: 打包 (CPack)
         shell: pwsh
-        run: cpack --preset "cpack-$env:PRESET"
+        run: |
+          cpack --preset "cpack-$env:PRESET"
+          if ($LASTEXITCODE -ne 0) { throw "打包失败" }
 
       - name: 上传安装包
         uses: actions/upload-artifact@v4
@@ -141,7 +228,7 @@ jobs:
           path: packages/*.zip
           if-no-files-found: error
 
-      # ---------- 9. 清理 ----------
+      # ---------- 11. 清理 ----------
       - name: 清理
         if: always()
         shell: cmd
@@ -164,32 +251,64 @@ jobs:
       - name: 安装依赖
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build build-essential
+          sudo apt-get install -y ninja-build build-essential python3
 
       - name: 环境信息
         run: |
           cmake --version
+          python3 --version
           gcc --version
-          g++ --version
           ninja --version
 
-      # ---------- 1. 生成 Presets ----------
+      # ---------- 1. 实例化模板（README 第 2 步）----------
+      - name: 初始化工程 (init_project.py)
+        run: |
+          echo "=== 执行 init_project.py $PROJECT_NAME ==="
+          python3 scripts/init_project.py "$PROJECT_NAME"
+
+      - name: 验证初始化结果
+        run: |
+          echo "=== 检查 CMakeLists.txt ==="
+          grep -E "project\(|export_name" CMakeLists.txt
+
+          grep -q "project($PROJECT_NAME VERSION" CMakeLists.txt \
+            || { echo "::error::project() 未被替换"; exit 1; }
+          grep -q "set(export_name $PROJECT_NAME)" CMakeLists.txt \
+            || { echo "::error::export_name 未被替换"; exit 1; }
+
+          echo "=== 检查导出配置文件已重命名 ==="
+          test -f "cmake/${PROJECT_NAME}Config.cmake.in" \
+            || { echo "::error::未找到 cmake/${PROJECT_NAME}Config.cmake.in"; exit 1; }
+          echo "  OK: cmake/${PROJECT_NAME}Config.cmake.in"
+
+          echo "=== 检查旧文件已不存在 ==="
+          test ! -f "cmake/project_templateConfig.cmake.in" \
+            || { echo "::error::旧的 project_templateConfig.cmake.in 仍然存在"; exit 1; }
+          echo "  OK: 旧配置文件已重命名"
+
+          echo "=== 检查 examples 中的工程名已替换 ==="
+          grep -q "    $PROJECT_NAME" examples/lib_test/CMakeLists.txt \
+            || { echo "::error::examples 未替换工程名"; exit 1; }
+          echo "  OK: examples 已替换"
+
+      # ---------- 2. 生成 Presets ----------
       - name: 生成 CMakePresets.json
         run: bash scripts/generate_presets.sh
 
       - name: 查看可用 Preset
         run: cmake --list-presets
 
-      # ---------- 2. 配置 ----------
+      # ---------- 3. 选择 Preset ----------
       - name: 选择 Preset
         run: |
           PRESETS=$(cmake --list-presets=configure)
           echo "$PRESETS"
-          # preset 名中的配置是小写（debug / release），matrix.config 是首字母大写
+
           CONFIG_LOWER=$(echo "${{ matrix.config }}" | tr '[:upper:]' '[:lower:]')
           NAME=$(echo "$PRESETS" \
             | grep -oE "\"gcc_[0-9.]+-${CONFIG_LOWER}\"" \
             | tr -d '"' | head -n1)
+
           if [ -z "$NAME" ]; then
             echo "::error::未找到 gcc_*-${CONFIG_LOWER} preset"
             exit 1
@@ -197,28 +316,30 @@ jobs:
           echo "使用 preset: $NAME"
           echo "PRESET=$NAME" >> "$GITHUB_ENV"
 
+      # ---------- 4. 配置 ----------
       - name: 配置 (CMake)
         run: |
           cmake --preset "$PRESET" \
                 -DBUILD_TESTS=ON \
                 -DBUILD_BENCHMARKS=ON
 
-      # ---------- 3. 构建 ----------
+      # ---------- 5. 构建 ----------
       - name: 构建
         run: cmake --build --preset "$PRESET" --parallel "$BUILD_PARALLEL"
 
-      # ---------- 4. 单元测试 ----------
+      # ---------- 6. 单元测试 ----------
       - name: 单元测试
         run: |
           ctest --preset "ctest-$PRESET" \
                 --output-on-failure \
                 --parallel "$BUILD_PARALLEL"
 
-      # ---------- 5. 性能测试 ----------
+      # ---------- 7. 性能测试 ----------
       - name: 性能测试
         run: |
           echo "--- bin 目录内容 ---"
           find bin -type f -executable 2>/dev/null | sort || true
+
           BENCH=$(find bin -type f -name 'bench_math*' -executable 2>/dev/null | head -n1)
           if [ -z "$BENCH" ]; then
             echo "::error::未找到 bench_math 可执行文件"
@@ -227,38 +348,50 @@ jobs:
           echo "运行: $BENCH"
           "$BENCH" --benchmark_min_time=0.1s --benchmark_format=console
 
-      # ---------- 6. 安装 ----------
+      # ---------- 8. 安装 ----------
       - name: 安装
         run: |
           cmake --install "build/$PRESET"
-          echo "--- 安装产物 ---"
+
+          echo "=== 安装产物 ==="
           find "install/$PRESET" -type f | sort
 
-      # ---------- 7. 验证 find_package 可用 ----------
-      - name: 验证导出包 (find_package)
+          echo "=== 检查导出包文件 ==="
+          CMAKE_DIR="install/$PRESET/lib/cmake/$PROJECT_NAME"
+          for f in "${PROJECT_NAME}Config.cmake" \
+                   "${PROJECT_NAME}ConfigVersion.cmake" \
+                   "${PROJECT_NAME}Targets.cmake"; do
+            test -f "$CMAKE_DIR/$f" \
+              || { echo "::error::缺少导出文件: $f"; exit 1; }
+            echo "  OK: $f"
+          done
+
+      # ---------- 9. 验证 find_package（用安装产物自带的示例）----------
+      - name: 验证 find_package (使用安装的示例工程)
         run: |
-          CONSUMER="$RUNNER_TEMP/consumer"
-          mkdir -p "$CONSUMER"
+          EXAMPLE_DIR="install/$PRESET/example/lib_test"
+          if [ ! -d "$EXAMPLE_DIR" ]; then
+            echo "::error::未找到安装的示例工程: $EXAMPLE_DIR"
+            exit 1
+          fi
 
-          cat > "$CONSUMER/CMakeLists.txt" <<'EOF'
-          cmake_minimum_required(VERSION 3.14)
-          project(consumer LANGUAGES CXX)
-          find_package(project_template REQUIRED)
-          add_executable(consumer main.cc)
-          target_link_libraries(consumer PRIVATE project_template::project_template)
-          EOF
+          echo "=== 示例工程内容 ==="
+          ls -la "$EXAMPLE_DIR"
 
-          cat > "$CONSUMER/main.cc" <<'EOF'
-          #include "static_lib/static_lib.h"
-          #include "shared_lib/shared_lib.h"
-          int main() { static_lib(); shared_lib(); return 0; }
-          EOF
+          echo "=== 检查示例已使用新工程名 ==="
+          grep -q "find_package($PROJECT_NAME REQUIRED)" "$EXAMPLE_DIR/CMakeLists.txt" \
+            || { echo "::error::示例工程未使用 find_package($PROJECT_NAME)"; exit 1; }
+          grep -q "$PROJECT_NAME::$PROJECT_NAME" "$EXAMPLE_DIR/CMakeLists.txt" \
+            || { echo "::error::示例工程未使用 $PROJECT_NAME::$PROJECT_NAME"; exit 1; }
+          echo "  OK: 示例工程已正确替换"
 
           PREFIX="$(realpath "install/$PRESET")"
-          cmake -S "$CONSUMER" -B "$CONSUMER/build" -DCMAKE_PREFIX_PATH="$PREFIX"
-          cmake --build "$CONSUMER/build" --parallel "$BUILD_PARALLEL"
+          cmake -S "$EXAMPLE_DIR" -B "$EXAMPLE_DIR/build" -DCMAKE_PREFIX_PATH="$PREFIX"
+          cmake --build "$EXAMPLE_DIR/build" --parallel "$BUILD_PARALLEL"
 
-      # ---------- 8. 打包 ----------
+          echo "✅ find_package($PROJECT_NAME) 验证通过"
+
+      # ---------- 10. 打包 ----------
       - name: 打包 (CPack)
         run: cpack --preset "cpack-$PRESET"
 
@@ -269,7 +402,7 @@ jobs:
           path: packages/*.tar.gz
           if-no-files-found: error
 
-      # ---------- 9. 清理 ----------
+      # ---------- 11. 清理 ----------
       - name: 清理
         if: always()
         run: bash scripts/clean_all.sh
@@ -311,7 +444,6 @@ jobs:
           echo "--- 共找到 $COUNT 个源文件 ---"
           echo "$FILES" | while read -r f; do echo "  $f"; done
 
-          # 多行列表写入 GITHUB_OUTPUT 需要特殊格式
           {
             echo "count=$COUNT"
             echo "files<<EOF"
@@ -342,7 +474,6 @@ jobs:
               FAILED=$((FAILED + 1))
               FAILED_LIST="$FAILED_LIST$f\n"
               echo "  [FAIL] $f"
-              # 输出具体差异（最多 20 行）
               clang-format "$f" | diff -u "$f" - | head -n 20 | sed 's/^/         /'
             fi
           done <<< "${{ steps.collect.outputs.files }}"
